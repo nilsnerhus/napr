@@ -37,61 +37,16 @@ jobs:
       
       - name: Restore and install R packages using renv
         run: |
-          install.packages("renv")
-          renv::restore()
-        shell: Rscript {0}
+          Rscript -e 'install.packages("renv")'
+          Rscript -e 'renv::restore()'
+      
+      - name: Install devtools
+        run: |
+          Rscript -e 'if(!require("devtools")) install.packages("devtools")'
       
       - name: Install the package locally
         run: |
           Rscript -e 'devtools::install()'
-      
-      - name: Create update script
-        run: |
-          mkdir -p .github/scripts
-          cat > .github/scripts/update_data.R << 'EOF'
-          # Try to load the package - with a fallback approach
-          tryCatch({
-            library(napunfccc)
-            message("Successfully loaded napunfccc package")
-          }, error = function(e) {
-            message("Package not installed, loading from source...")
-            if (!require(devtools)) install.packages("devtools")
-            devtools::load_all(".")
-            message("Successfully loaded package from source")
-          })
-          
-          # Create directory for cache
-          cache_dir <- ".github/nap_cache"
-          if (!dir.exists(cache_dir)) {
-            dir.create(cache_dir, recursive = TRUE)
-          }
-          
-          # Process fresh NAP data
-          message("Processing fresh NAP data...")
-          nap_data <- get_naps_fresh(cache_dir = cache_dir)
-          
-          # Save as package data
-          message("Saving processed data...")
-          usethis::use_data(nap_data, overwrite = TRUE)
-          
-          # Update documentation for the data
-          message("Updating documentation...")
-          timestamp <- format(Sys.time(), "%Y-%m-%d")
-          
-          # Add timestamp to the data documentation
-          data_file <- "R/data.R"
-          data_content <- readLines(data_file)
-          for (i in seq_along(data_content)) {
-            if (grepl("@note Last updated:", data_content[i])) {
-              data_content[i] <- paste0("#' @note Last updated: ", timestamp)
-              break
-            }
-          }
-          writeLines(data_content, data_file)
-          
-          # Document the package
-          devtools::document()
-          EOF
       
       - name: Process fresh NAP data
         run: Rscript .github/scripts/update_data.R
