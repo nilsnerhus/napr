@@ -41,15 +41,24 @@ jobs:
           renv::restore()
         shell: Rscript {0}
       
+      - name: Install the package locally
+        run: |
+          Rscript -e 'devtools::install()'
+      
       - name: Create update script
         run: |
           mkdir -p .github/scripts
           cat > .github/scripts/update_data.R << 'EOF'
-          # Make sure renv is active
-          source(".Rprofile")
-          
-          # Load the package
-          library(napunfccc)
+          # Try to load the package - with a fallback approach
+          tryCatch({
+            library(napunfccc)
+            message("Successfully loaded napunfccc package")
+          }, error = function(e) {
+            message("Package not installed, loading from source...")
+            if (!require(devtools)) install.packages("devtools")
+            devtools::load_all(".")
+            message("Successfully loaded package from source")
+          })
           
           # Create directory for cache
           cache_dir <- ".github/nap_cache"
