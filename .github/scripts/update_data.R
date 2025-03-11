@@ -3,6 +3,12 @@ source(".Rprofile")
 
 # Load the package
 library(napunfccc)
+library(rvest)     # For web scraping
+library(tidyverse) # For data manipulation
+library(xml2)      # For XML processing
+library(pdftools)  # For extracting text from PDFs
+library(httr)      # For downloading files
+library(polite)    # For ethical web scraping
 
 # Create directory for cache
 cache_dir <- ".github/nap_cache"
