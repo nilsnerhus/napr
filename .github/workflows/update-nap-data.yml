@@ -41,9 +41,10 @@ jobs:
           renv::restore()
         shell: Rscript {0}
       
-      - name: Process fresh NAP data
+      - name: Create update script
         run: |
-          Rscript -e '
+          mkdir -p .github/scripts
+          cat > .github/scripts/update_data.R << 'EOF'
           # Make sure renv is active
           source(".Rprofile")
           
@@ -73,7 +74,7 @@ jobs:
           data_content <- readLines(data_file)
           for (i in seq_along(data_content)) {
             if (grepl("@note Last updated:", data_content[i])) {
-              data_content[i] <- paste0("#\' @note Last updated: ", timestamp)
+              data_content[i] <- paste0("#' @note Last updated: ", timestamp)
               break
             }
           }
@@ -81,7 +82,10 @@ jobs:
           
           # Document the package
           devtools::document()
-          '
+          EOF
+      
+      - name: Process fresh NAP data
+        run: Rscript .github/scripts/update_data.R
       
       - name: Commit and push changes
         run: |
