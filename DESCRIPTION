@@ -2,26 +2,26 @@ Package: napr
 Title: Scraped access to all NAPs published
 Version: 0.1.0
 Authors@R: 
-    person("Your", "Name", email = "your.email@example.com", role = c("aut", "cre"))
-Description: A package providing access to National Adaptation Plans (NAPs) from 
-    the UNFCCC NAP Central website. Contains pre-processed text data from NAP 
-    documents, regularly updated via GitHub Actions, with functions to access 
-    the latest versions when needed.
+    person("Nils", "Rørstad", , "202302046@post.au.dk", role = c("aut", "cre"))
+Description: A package providing access to National Adaptation Plans
+    (NAPs) from the UNFCCC NAP Central website. Contains pre-processed
+    text data from NAP documents, regularly updated via GitHub Actions,
+    with functions to access the latest versions when needed.
 License: MIT + file LICENSE
+Depends: 
+    R (>= 3.5.0)
 Encoding: UTF-8
+LazyData: true
 Roxygen: list(markdown = TRUE)
 RoxygenNote: 7.3.2
 Imports: 
-    rvest,
     dplyr,
-    xml2,
-    pdftools,
     httr,
+    pdftools,
     polite,
-    tibble
+    rvest,
+    tibble,
+    xml2
 Suggests: 
     knitr,
     rmarkdown
-Depends: 
-    R (>= 3.5.0)
-LazyData: true
