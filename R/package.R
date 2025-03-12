@@ -47,5 +47,5 @@
 #' @importFrom pdftools pdf_text pdf_info
 #'
 #' @name napr
-#' @docType package
+#' @docType _PACKAGE
 NULL

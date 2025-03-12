@@ -20,4 +20,5 @@
 #' }
 #'
 #' @source \url{https://napcentral.org/submitted-naps}
-#' @note Last updated: 2025-03-12
+#' @name nap_data
+"nap_data"

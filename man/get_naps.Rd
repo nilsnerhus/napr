@@ -10,13 +10,11 @@ get_naps()
 A tibble containing NAP data with metadata and text content.
 }
 \description{
-Returns the pre-processed NAP data included with the package. This data
-is automatically updated through GitHub Actions on a monthly basis.
+Returns the pre-processed National Adaptation Plans (NAPs) data included with
+the package. This data is automatically updated through GitHub Actions on a
+monthly basis.
 }
 \examples{
 # Get the pre-processed data included with the package
 naps <- get_naps()
-
-# Check how many NAPs are available
-nrow(naps)
 }
