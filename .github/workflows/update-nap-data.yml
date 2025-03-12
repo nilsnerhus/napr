@@ -35,24 +35,24 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-renv-
       
-      - name: Install renv and restore packages
+      - name: Restore and install R packages using renv
         run: |
-          install.packages("renv")
-          renv::restore()
-        shell: Rscript {0}
+          Rscript -e 'install.packages("renv")'
+          Rscript -e 'renv::restore()'
       
-      - name: Install required development packages
+      - name: Install devtools
         run: |
-          renv::install(c("devtools", "usethis"))
-        shell: Rscript {0}
+          Rscript -e 'if(!require("devtools")) install.packages("devtools")'
       
-      - name: Install package locally
+      - name: Install the package locally
         run: |
-          devtools::install()
-        shell: Rscript {0}
+          Rscript -e 'devtools::install()'
       
-      - name: Process fresh NAP data
-        run: Rscript .github/scripts/update_data.R
+      - name: Step 1 - Scrape NAP metadata
+        run: Rscript .github/scripts/scrape_naps.R
+      
+      - name: Step 2 - Download and process NAP PDFs
+        run: Rscript .github/scripts/download_process_pdfs.R
       
       - name: Commit and push changes
         run: |

@@ -20,5 +20,4 @@
 #' }
 #'
 #' @source \url{https://napcentral.org/submitted-naps}
-#' @note Last updated: See the package DESCRIPTION file or GitHub commit history
-"nap_data"
+#' @note Last updated: 2025-03-12
