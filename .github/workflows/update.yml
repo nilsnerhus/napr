@@ -41,7 +41,7 @@ jobs:
           Rscript -e 'renv::restore()'
       
       - name: Download previous PDF artifacts
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           name: nap-pdfs
           path: .github/nap_cache/pdfs
@@ -54,7 +54,7 @@ jobs:
         run: Rscript .github/scripts/pdfs.R
       
       - name: Upload PDFs as artifacts
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: nap-pdfs
           path: .github/nap_cache/pdfs
