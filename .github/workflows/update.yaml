@@ -40,19 +40,11 @@ jobs:
           Rscript -e 'install.packages("renv")'
           Rscript -e 'renv::restore()'
       
-      - name: Install devtools
-        run: |
-          Rscript -e 'if(!require("devtools")) install.packages("devtools")'
-      
-      - name: Install the package locally
-        run: |
-          Rscript -e 'devtools::install()'
-      
       - name: Step 1 - Scrape NAP metadata
-        run: Rscript .github/scripts/scrape_naps.R
+        run: Rscript .github/scripts/scrape.R
       
       - name: Step 2 - Download and process NAP PDFs
-        run: Rscript .github/scripts/download_process_pdfs.R
+        run: Rscript .github/scripts/pdfs.R
       
       - name: Commit and push changes
         run: |
