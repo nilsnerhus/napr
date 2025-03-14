@@ -1,290 +1,256 @@
-#!/usr/bin/env Rscript
-# Optimized NAP PDF processor for GitHub Actions
-# Focuses on reliability, parallel processing, and efficient resource usage
+# Script to download and process NAP PDFs
+# Make sure renv is active
+source(".Rprofile")
 
-# Configure execution environment
-options(warn = 1)  # Show warnings immediately
-options(stringsAsFactors = FALSE)  # Prevent string/factor conversion 
-options(future.fork.enable = TRUE)  # Enable forking for parallel processing
+# Load required libraries
+library(dplyr)
+library(httr)
+library(pdftools)
 
-# Load essential libraries without startup messages
-suppressPackageStartupMessages({
-  library(dplyr, quietly = TRUE)
-  library(httr, quietly = TRUE)
-  library(pdftools, quietly = TRUE)
-  library(future, quietly = TRUE)
-  library(future.apply, quietly = TRUE)
-})
+# Start time for tracking script execution
+start_time <- Sys.time()
+message("Starting NAP PDF processing at ", format(start_time))
 
-# Define constants
-CACHE_DIR <- ".github/nap_cache"
-DOWNLOAD_DIR <- file.path(CACHE_DIR, "pdfs")
-METADATA_FILE <- file.path(CACHE_DIR, "nap_data.rds")
-LOG_FILE <- file.path(CACHE_DIR, "pdf_processing.log")
-USER_AGENT <- "GitHub-Actions-NAP-PDF-Processor (https://github.com/yourusername/napr)"
-DOWNLOAD_TIMEOUT <- 300  # 5 minutes
-DOWNLOAD_DELAY <- 1      # 1 second
-MAX_WORKERS <- min(future::availableCores() - 1, 4)  # Use available cores but limit to 4
-CHUNK_SIZE <- 5          # Process in chunks of 5 documents
+# Define cache directories
+cache_dir <- ".github/nap_cache"
+download_dir <- file.path(cache_dir, "pdfs")
 
-# Initialize log file
-cat(format(Sys.time()), "PDF processing started\n", file = LOG_FILE)
-
-# Ensure directories exist
-if (!dir.exists(DOWNLOAD_DIR)) {
-  dir.create(DOWNLOAD_DIR, recursive = TRUE)
+# Create download directory if it doesn't exist
+if (!dir.exists(download_dir)) {
+  dir.create(download_dir, recursive = TRUE)
+  message("Created PDF directory: ", download_dir)
 }
+
+# Path to the cached metadata
+cache_file <- file.path(cache_dir, "nap_data.rds")
 
 # Check if metadata exists
-if (!file.exists(METADATA_FILE)) {
-  msg <- "ERROR: NAP metadata file not found. Run scrape.R first."
-  message(msg)
-  cat(format(Sys.time()), msg, "\n", file = LOG_FILE, append = TRUE)
-  if (!interactive()) quit(status = 1, save = "no")
+if (!file.exists(cache_file)) {
+  stop("NAP metadata file not found. Please run the scrape.R script first.")
 }
 
-# Load metadata
-nap_data <- readRDS(METADATA_FILE)
+# Load the metadata
+message("Loading NAP metadata from: ", cache_file)
+nap_data <- readRDS(cache_file)
 message("Loaded metadata for ", nrow(nap_data), " NAPs")
 
-# Setup parallel processing
-plan(multiprocess, workers = MAX_WORKERS)
-message("Using parallel processing with ", MAX_WORKERS, " workers")
+# Count NAPs needing download and processing
+need_download <- sum(!nap_data$pdf_download_success & !is.na(nap_data$pdf_link), na.rm = TRUE)
+need_processing <- sum(nap_data$pdf_download_success & (is.na(nap_data$pdf_text) | nap_data$pdf_text == ""), na.rm = TRUE)
 
-# Process PDFs efficiently in batches
-process_pdfs <- function() {
-  # Count work to be done
-  need_download <- sum(is.na(nap_data$pdf_download_success) | !nap_data$pdf_download_success, na.rm = TRUE)
-  need_processing <- sum((is.na(nap_data$pdf_text) | nap_data$pdf_text == "") & !is.na(nap_data$pdf_path), na.rm = TRUE)
-  
-  message("Status:")
-  message("- PDFs to download: ", need_download)
-  message("- PDFs to process: ", need_processing)
-  
-  # Skip processing if nothing to do
-  if (need_download == 0 && need_processing == 0) {
-    message("No work to do. All PDFs are downloaded and processed.")
-    return(nap_data)
+message("NAPs needing download: ", need_download)
+message("NAPs needing text extraction: ", need_processing)
+
+# Define function to retry downloads
+download_with_retry <- function(url, destfile, max_attempts = 3, delay_base = 5, user_agent) {
+  for (attempt in 1:max_attempts) {
+    message("Download attempt ", attempt, " for ", basename(destfile))
+    
+    tryCatch({
+      # Honor the delay set (with exponential backoff on retries)
+      if (attempt > 1) {
+        backoff_delay <- delay_base * (2^(attempt-1))
+        message("Waiting ", backoff_delay, " seconds before retry...")
+        Sys.sleep(backoff_delay)
+      }
+      
+      # Make the request with a proper user agent
+      response <- httr::GET(
+        url, 
+        httr::write_disk(destfile, overwrite = TRUE),
+        httr::user_agent(user_agent),
+        httr::timeout(120) # 2 minute timeout
+      )
+      
+      if (httr::status_code(response) == 200) {
+        # Verify file size is greater than 0
+        if (file.size(destfile) > 0) {
+          message("Download successful.")
+          return(TRUE)
+        } else {
+          message("Downloaded file is empty. Treating as failed download.")
+          file.remove(destfile)
+        }
+      } else {
+        message("Download failed with status code: ", httr::status_code(response))
+      }
+    }, error = function(e) {
+      message("Error downloading file: ", e$message)
+    })
   }
   
-  # Prepare for downloads
-  download_indices <- which(is.na(nap_data$pdf_download_success) | !nap_data$pdf_download_success)
-  download_counts <- list(success = 0, failure = 0)
-  
-  # Download PDFs sequentially (parallel downloads could trigger rate limiting)
-  if (length(download_indices) > 0) {
-    message("Downloading ", length(download_indices), " PDFs...")
+  message("All download attempts failed for ", basename(destfile))
+  return(FALSE)
+}
+
+# Function to safely extract PDF text with error handling
+extract_pdf_text <- function(file_path) {
+  tryCatch({
+    # Get number of pages
+    pdf_info <- pdftools::pdf_info(file_path)
+    pages <- pdf_info$pages
     
-    for (i in download_indices) {
-      # Skip if no link
-      if (is.na(nap_data$pdf_link[i])) {
-        next
-      }
-      
-      # Prepare file path
-      country_name <- nap_data$country_name[i]
-      safe_country_name <- tolower(gsub("[^a-zA-Z0-9]", "_", country_name))
-      filename <- paste0(safe_country_name, ".pdf")
-      file_path <- file.path(DOWNLOAD_DIR, filename)
-      nap_data$pdf_path[i] <- file_path
-      
-      # Get complete URL
-      pdf_url <- nap_data$pdf_link[i]
-      if (!grepl("^http", pdf_url)) {
-        pdf_url <- paste0("https://napcentral.org", pdf_url)
-      }
-      
-      # Download with error handling
-      message("  Downloading: ", country_name)
-      download_result <- tryCatch({
-        # Apply rate limiting
-        Sys.sleep(DOWNLOAD_DELAY)
-        
-        # Make the request
-        response <- httr::GET(
-          pdf_url, 
-          httr::write_disk(file_path, overwrite = TRUE),
-          httr::user_agent(USER_AGENT),
-          httr::timeout(DOWNLOAD_TIMEOUT)
-        )
-        
-        if (httr::status_code(response) == 200) {
-          nap_data$pdf_download_success[i] <- TRUE
-          download_counts$success <- download_counts$success + 1
+    message("Extracting text from PDF with ", pages, " pages")
+    
+    # Extract text from PDF
+    text_content <- NULL
+    
+    # Use timeout to prevent hanging on problematic PDFs
+    # This requires the 'R.utils' package, with fallback to basic extraction
+    if (requireNamespace("R.utils", quietly = TRUE)) {
+      result <- tryCatch({
+        R.utils::withTimeout({
+          text_content <- pdftools::pdf_text(file_path)
           TRUE
-        } else {
-          log_msg <- paste("Download failed for", country_name, "with status code:", httr::status_code(response))
-          cat(format(Sys.time()), log_msg, "\n", file = LOG_FILE, append = TRUE)
-          download_counts$failure <- download_counts$failure + 1
-          FALSE
-        }
+        }, timeout = 300) # 5 minutes
       }, error = function(e) {
-        log_msg <- paste("Error downloading", country_name, ":", e$message)
-        cat(format(Sys.time()), log_msg, "\n", file = LOG_FILE, append = TRUE)
-        download_counts$failure <- download_counts$failure + 1
-        FALSE
+        message("Timeout or error extracting text: ", e$message)
+        return(FALSE)
       })
       
-      # Save progress after each download
-      if (download_result) {
-        saveRDS(nap_data, METADATA_FILE)
+      if (!result) {
+        message("Trying to extract with reduced settings...")
+        text_content <- pdftools::pdf_text(file_path, encoding = "UTF-8")
       }
+    } else {
+      # Fallback if R.utils not available
+      text_content <- pdftools::pdf_text(file_path)
     }
     
-    message("Download summary:")
-    message("- Successful: ", download_counts$success)
-    message("- Failed: ", download_counts$failure)
+    # Combine all pages into a single string
+    full_text <- paste(text_content, collapse = "\n\n")
     
-    # Save after downloads
-    saveRDS(nap_data, METADATA_FILE)
-  }
-  
-  # Identify PDFs that need text extraction
-  process_indices <- which(
-    (is.na(nap_data$pdf_text) | nap_data$pdf_text == "") & 
-      !is.na(nap_data$pdf_path) & 
-      file.exists(nap_data$pdf_path)
-  )
-  
-  # Process PDFs in parallel using chunks
-  if (length(process_indices) > 0) {
-    message("Processing ", length(process_indices), " PDFs in parallel...")
-    
-    # Process in chunks to enable partial progress saving
-    chunks <- split(process_indices, ceiling(seq_along(process_indices) / CHUNK_SIZE))
-    
-    for (chunk_idx in seq_along(chunks)) {
-      current_chunk <- chunks[[chunk_idx]]
-      message("  Processing chunk ", chunk_idx, "/", length(chunks), 
-              " (", length(current_chunk), " PDFs)")
-      
-      # Process chunk in parallel
-      results <- future.apply::future_lapply(current_chunk, function(i) {
-        country_name <- nap_data$country_name[i]
-        file_path <- nap_data$pdf_path[i]
-        
-        result <- list(
-          success = FALSE,
-          pages = NA_integer_,
-          text = NA_character_
-        )
-        
-        tryCatch({
-          # Extract PDF info
-          pdf_info <- pdftools::pdf_info(file_path)
-          result$pages <- pdf_info$pages
-          
-          # Extract text from PDF
-          text_content <- pdftools::pdf_text(file_path)
-          
-          # Combine pages
-          result$text <- paste(text_content, collapse = "\n\n")
-          result$success <- TRUE
-        }, error = function(e) {
-          log_msg <- paste("Error processing", country_name, ":", e$message)
-          # We can't directly append to log file in parallel workers
-          # Will return the message to append in main process
-          result$error_message <- log_msg
-        })
-        
-        return(list(
-          index = i,
-          result = result
-        ))
-      }, future.seed = TRUE)
-      
-      # Update data with results
-      for (res in results) {
-        i <- res$index
-        result <- res$result
-        
-        if (result$success) {
-          nap_data$pdf_pages[i] <- result$pages
-          nap_data$pdf_text[i] <- result$text
-        }
-        
-        if (!is.null(result$error_message)) {
-          cat(format(Sys.time()), result$error_message, "\n", 
-              file = LOG_FILE, append = TRUE)
-        }
-      }
-      
-      # Save progress after each chunk
-      saveRDS(nap_data, METADATA_FILE)
-      message("  Saved progress after chunk ", chunk_idx)
-    }
-    
-    # Count processing results
-    processed_count <- sum(!is.na(nap_data$pdf_text) & nap_data$pdf_text != "", na.rm = TRUE)
-    message("Processing summary:")
-    message("- Successfully processed: ", processed_count, "/", length(process_indices))
-  }
-  
-  return(nap_data)
-}
-
-# Main execution function
-main <- function() {
-  start_time <- Sys.time()
-  message("PDF processing started at: ", format(start_time))
-  
-  # Process PDFs
-  updated_data <- process_pdfs()
-  
-  # Save final data
-  saveRDS(updated_data, METADATA_FILE)
-  message("Processed NAP data saved to: ", METADATA_FILE)
-  
-  # Create package data
-  try({
-    usethis::use_data(updated_data, name = "nap_data", overwrite = TRUE)
-    
-    # Update documentation timestamp
-    timestamp <- format(Sys.time(), "%Y-%m-%d")
-    data_file <- "R/data.R"
-    
-    if (file.exists(data_file)) {
-      data_content <- readLines(data_file)
-      for (i in seq_along(data_content)) {
-        if (grepl("@note Last updated:", data_content[i])) {
-          data_content[i] <- paste0("#' @note Last updated: ", timestamp)
-          break
-        }
-      }
-      writeLines(data_content, data_file)
-      
-      # Document package silently
-      suppressMessages(devtools::document(quiet = TRUE))
-    }
+    return(list(
+      success = TRUE,
+      pages = pages,
+      text = full_text
+    ))
+  }, error = function(e) {
+    message("Error processing PDF: ", e$message)
+    return(list(
+      success = FALSE,
+      pages = NA_integer_,
+      text = NA_character_
+    ))
   })
-  
-  # Print statistics
-  total_docs <- nrow(updated_data)
-  downloaded <- sum(updated_data$pdf_download_success, na.rm = TRUE)
-  processed <- sum(!is.na(updated_data$pdf_text) & updated_data$pdf_text != "", na.rm = TRUE)
-  total_pages <- sum(updated_data$pdf_pages, na.rm = TRUE)
-  
-  message("\nFinal statistics:")
-  message("- Total NAPs: ", total_docs)
-  message("- Successfully downloaded: ", downloaded, " (", round(downloaded/total_docs*100), "%)")
-  message("- Successfully processed: ", processed, " (", round(processed/total_docs*100), "%)")
-  message("- Total pages: ", total_pages)
-  message("- Average pages per document: ", round(total_pages/processed, 1))
-  
-  end_time <- Sys.time()
-  execution_time <- difftime(end_time, start_time, units = "mins")
-  message("PDF processing completed at: ", format(end_time))
-  message("Total execution time: ", round(execution_time, 2), " minutes")
-  
-  # Log completion
-  cat(format(Sys.time()), "PDF processing completed\n", 
-      file = LOG_FILE, append = TRUE)
-  
-  return(TRUE)
 }
 
-# Run main function with proper exit code
-result <- main()
-if (!result && !interactive()) {
-  quit(status = 1, save = "no")
+# Download and process PDFs
+user_agent <- "Educational Research Project on National Adaptation Plans (your.email@example.com)"
+delay <- 5 # seconds between downloads
+
+# Count for tracking progress
+total_naps <- nrow(nap_data)
+downloaded_count <- 0
+processed_count <- 0
+
+# Process PDFs
+for (i in 1:nrow(nap_data)) {
+  # Skip if there's no PDF link
+  if (is.na(nap_data$pdf_link[i])) {
+    message("No PDF link for entry ", i, " (", nap_data$country_name[i], ")")
+    next
+  }
+  
+  # Check if we need to download or process this entry
+  need_download <- !nap_data$pdf_download_success[i] 
+  need_process <- nap_data$pdf_download_success[i] && (is.na(nap_data$pdf_text[i]) || nap_data$pdf_text[i] == "")
+  
+  # Skip if nothing to do
+  if (!need_download && !need_process) {
+    if (i %% 10 == 0) {
+      message("Entry ", i, " (", nap_data$country_name[i], ") already processed, skipping.")
+    }
+    next
+  }
+  
+  # Get the complete URL (handle relative URLs)
+  pdf_url <- nap_data$pdf_link[i]
+  if (!grepl("^http", pdf_url)) {
+    # If it's a relative URL, add the base URL
+    pdf_url <- paste0("https://napcentral.org", pdf_url)
+  }
+  
+  # Download if needed
+  if (need_download) {
+    file_path <- nap_data$pdf_path[i]
+    message("Downloading PDF ", i, " of ", total_naps, ": ", basename(file_path))
+    
+    # Add delay between downloads to be polite
+    Sys.sleep(delay)
+    
+    download_success <- download_with_retry(
+      pdf_url, 
+      file_path, 
+      max_attempts = 3, 
+      user_agent = user_agent
+    )
+    
+    nap_data$pdf_download_success[i] <- download_success
+    
+    if (download_success) {
+      downloaded_count <- downloaded_count + 1
+      
+      # Save progress after each successful download
+      saveRDS(nap_data, cache_file)
+      message("Saved progress after downloading PDF ", i)
+    } else {
+      # Skip further processing if download failed
+      next
+    }
+  }
+  
+  # Process PDF text if needed
+  if ((need_download && nap_data$pdf_download_success[i]) || need_process) {
+    file_path <- nap_data$pdf_path[i]
+    
+    if (file.exists(file_path)) {
+      message("Extracting text from PDF ", i, " of ", total_naps, ": ", basename(file_path))
+      
+      pdf_result <- extract_pdf_text(file_path)
+      
+      if (pdf_result$success) {
+        nap_data$pdf_pages[i] <- pdf_result$pages
+        nap_data$pdf_text[i] <- pdf_result$text
+        
+        message("Successfully extracted text from PDF (", pdf_result$pages, " pages)")
+        processed_count <- processed_count + 1
+        
+        # Save progress after each successful text extraction
+        saveRDS(nap_data, cache_file)
+        message("Saved progress after processing PDF ", i)
+      }
+    } else {
+      message("PDF file doesn't exist for processing: ", file_path)
+      # Reset download success if file doesn't exist
+      nap_data$pdf_download_success[i] <- FALSE
+    }
+  }
+  
+  # Print progress update occasionally
+  if (i %% 5 == 0 || i == nrow(nap_data)) {
+    progress <- round(i / total_naps * 100)
+    message("Progress: ", progress, "% (entry ", i, " of ", total_naps, ")")
+  }
 }
+
+# Save the final data
+saveRDS(nap_data, cache_file)
+message("Processed NAP data saved to: ", cache_file)
+
+# Save the processed data
+message("Saving processed data to package...")
+save(nap_data, file = "data/nap_data.rda")
+
+# Complete execution with timing information
+end_time <- Sys.time()
+elapsed <- difftime(end_time, start_time, units = "mins")
+message("NAP PDF processing completed in ", round(elapsed, 2), " minutes at ", format(end_time))
+
+# Summary report
+message("=== SUMMARY ===")
+message("Total NAPs processed: ", total_naps)
+message("PDFs downloaded in this run: ", downloaded_count)
+message("PDFs text extracted in this run: ", processed_count)
+message("Total NAPs with successful downloads: ", sum(nap_data$pdf_download_success, na.rm = TRUE))
+message("Total NAPs with text content: ", sum(!is.na(nap_data$pdf_text) & nap_data$pdf_text != "", na.rm = TRUE))
