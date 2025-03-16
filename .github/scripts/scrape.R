@@ -19,7 +19,12 @@ for (dir in c(cache_dir, pdf_dir)) {
 # Define file paths
 cache_file <- file.path(cache_dir, "nap_data.rds")
 output_file <- file.path("data", "nap_data.rda")
-if (!dir.exists("data")) dir.create("data")
+
+# Create data directory if it doesn't exist
+if (!dir.exists("data")) {
+  dir.create("data")
+  message("Created 'data' directory")
+}
 
 # Scrape NAP metadata
 message("Scraping NAP metadata...")
@@ -181,13 +186,15 @@ for (i in 1:nrow(nap_data)) {
   # Save progress every 5 records
   if (i %% 5 == 0 || i == nrow(nap_data)) {
     saveRDS(nap_data, cache_file)
-    message("Progress saved")
+    message("Progress saved to cache")
   }
 }
 
-# Filter to successful downloads only
-final_nap_data <- nap_data %>% filter(pdf_download_success)
+# Filter to successful downloads only and keep the standard variable name
+nap_data <- nap_data %>% filter(pdf_download_success)
 
 # Save final data
-save(final_nap_data, file = output_file, compress = "xz")
-message("Done! Successfully processed ", nrow(final_nap_data), " English NAPs")
+message("Saving final data...")
+save(nap_data, file = output_file)
+
+message("Done! Successfully processed ", nrow(nap_data), " English NAPs")
