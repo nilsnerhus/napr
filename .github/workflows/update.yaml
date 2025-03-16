@@ -44,20 +44,17 @@ jobs:
         uses: actions/download-artifact@v3
         with:
           name: nap-pdfs
-          path: .github/nap_cache/pdfs
+          path: .github/cache/pdfs
         continue-on-error: true  # Continue even if no previous artifacts exist
       
-      - name: Step 1 - Scrape NAP metadata
+      - name: Scrape NAP metadata
         run: Rscript .github/scripts/scrape.R
-      
-      - name: Step 2 - Download and process NAP PDFs
-        run: Rscript .github/scripts/pdfs.R
-      
+
       - name: Upload PDFs as artifacts
         uses: actions/upload-artifact@v3
         with:
           name: nap-pdfs
-          path: .github/nap_cache/pdfs
+          path: .github/cache/pdfs
           retention-days: 90  # Store PDFs for 90 days
       
       - name: Commit and push changes

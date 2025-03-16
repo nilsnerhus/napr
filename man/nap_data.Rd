@@ -14,7 +14,7 @@ A tibble with the following variables:
 \item{nap_lang}{Character. The languages available for the NAP}
 \item{date_posted}{Character. The date the NAP was posted}
 \item{pdf_link}{Character. The URL to the English PDF}
-\item{pdf_path}{Character. The path to the downloaded file (during processing)}
+\item{pdf_path}{Character. The path to the downloaded file}
 \item{pdf_download_success}{Logical. Whether the download was successful}
 \item{pdf_pages}{Integer. The number of pages in the PDF}
 \item{pdf_text}{Character. The full text content extracted from the PDF}
@@ -27,8 +27,8 @@ A tibble with the following variables:
 nap_data
 }
 \description{
-A dataset containing information and text content from National Adaptation Plans
-(NAPs) downloaded from the UNFCCC NAP Central website. This dataset is automatically
-updated monthly through GitHub Actions.
+A dataset containing information and text content from National Adaptation
+Plans (NAPs) downloaded from the UNFCCC NAP Central website.
+This dataset is automatically updated through GitHub Actions.
 }
 \keyword{datasets}

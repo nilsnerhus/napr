@@ -1,193 +1,193 @@
-# Script to scrape NAP metadata from the NAP Central website
-# Make sure renv is active
+# NAP scraper with robust link extraction for English NAPs only
 source(".Rprofile")
 
-# Load required libraries
+# Load essential libraries
 library(dplyr)
 library(rvest)
 library(polite)
+library(httr)
+library(pdftools)
 library(tibble)
 
-# Create cache directory
-cache_dir <- ".github/nap_cache"
-if (!dir.exists(cache_dir)) {
-  dir.create(cache_dir, recursive = TRUE)
-  message("Created cache directory: ", cache_dir)
+# Create directories
+cache_dir <- ".github/cache"
+pdf_dir <- file.path(cache_dir, "pdfs")
+for (dir in c(cache_dir, pdf_dir)) {
+  if (!dir.exists(dir)) dir.create(dir, recursive = TRUE)
 }
 
-# Start time for tracking script execution
-start_time <- Sys.time()
-message("Starting NAP metadata scraping at ", format(start_time))
+# Define file paths
+cache_file <- file.path(cache_dir, "nap_data.rds")
+output_file <- file.path("data", "nap_data.rda")
+if (!dir.exists("data")) dir.create("data")
 
-# Define the scraping function with better error handling
-url <- "https://napcentral.org/submitted-naps"
-user_agent <- "napr (202302046@post.au.dk)"
-delay <- 3  # More polite delay between requests
+# Scrape NAP metadata
+message("Scraping NAP metadata...")
+session <- polite::bow(
+  url = "https://napcentral.org/submitted-naps",
+  user_agent = "napr (nnrorstad@gmail.com)",
+  delay = 3
+)
+nap_html <- polite::scrape(session)
 
-# Try to create a polite session
-message("Connecting to NAP Central...")
-tryCatch({
-  session <- polite::bow(
-    url = url,
-    user_agent = user_agent,
-    delay = delay
-  )
-  message("Successfully connected to NAP Central")
-}, error = function(e) {
-  message("Failed to connect to NAP Central: ", e$message)
-  # Exit with error code if connection fails
-  stop("Connection to NAP Central failed")
-})
+# Get all rows from the table
+rows <- nap_html %>% html_nodes("tbody tr")
+message("Found ", length(rows), " NAP entries in table")
 
-# Politely scrape the HTML content
-message("Scraping NAP Central...")
-tryCatch({
-  nap_html <- polite::scrape(session)
-}, error = function(e) {
-  message("Failed to scrape NAP Central: ", e$message)
-  stop("Failed to scrape NAP Central")
-})
-
-# Extract all rows from the table
-rows <- tryCatch({
-  nap_html %>% rvest::html_nodes("tbody tr")
-}, error = function(e) {
-  message("Table structure not found on NAP Central. Has the website been redesigned?")
-  stop("Table structure not found. Website may have changed.")
-})
-
-if (length(rows) == 0) {
-  message("No NAP entries found. Website may have changed structure.")
-  stop("No NAP entries found")
-}
-
-message(paste("Found", length(rows), "NAP entries to process"))
-
-# Create an empty dataframe to store our results
-nap_data <- tibble::tibble(
+# Create empty dataframe for results
+nap_data <- tibble(
   nap_id = character(),
   country_name = character(),
   region = character(),
   ldc_sids_marker = character(),
-  nap_lang = character(),
+  language_options = character(),
   date_posted = character(),
-  pdf_link = character(),
-  scrape_date = character()  # Added timestamp for tracking when data was collected
+  english_pdf_link = character(),
+  pdf_path = character(),
+  pdf_download_success = logical(),
+  pdf_text = character()
 )
 
-# Loop through each row and extract the data
-successful_entries <- 0
+# Process each row to extract all needed data
 for (i in 1:length(rows)) {
-  # Only print progress occasionally to reduce log noise
-  if (i %% 10 == 0 || i == 1 || i == length(rows)) {
-    message(paste("Processing entry", i, "of", length(rows)))
-  }
+  # Extract cells from this row
+  cells <- rows[i] %>% html_nodes("td")
   
-  tryCatch({
-    # Extract the cells in this row
-    cells <- rows[i] %>% rvest::html_nodes("td")
+  if (length(cells) >= 6) {
+    # Extract basic metadata
+    nap_id <- cells[1] %>% html_text(trim = TRUE)
+    country_name <- cells[2] %>% html_text(trim = TRUE)
+    region <- cells[3] %>% html_text(trim = TRUE)
+    ldc_sids_marker <- cells[4] %>% html_text(trim = TRUE)
+    language_cell <- cells[5]
+    date_posted <- cells[6] %>% html_text(trim = TRUE)
     
-    if (length(cells) < 6) {
-      message(paste("Row", i, "has fewer than expected columns. Skipping."))
-      next
+    # Handle different link structures
+    # Try multiple possible selectors for English PDFs
+    english_pdf_link <- NULL
+    
+    # Option 1: Look for links with "English" text
+    links <- language_cell %>% html_nodes("a")
+    
+    if (length(links) > 0) {
+      link_texts <- links %>% html_text(trim = TRUE)
+      
+      for (j in 1:length(links)) {
+        # Check if this link text contains "English" (case insensitive)
+        if (length(link_texts) >= j && !is.na(link_texts[j]) && 
+            grepl("english", link_texts[j], ignore.case = TRUE)) {
+          english_pdf_link <- links[j] %>% html_attr("href")
+          break
+        }
+      }
     }
     
-    # Extract the text from all six columns
-    nap_id <- cells[1] %>% rvest::html_text(trim = TRUE)
-    country_name <- cells[2] %>% rvest::html_text(trim = TRUE)
-    region <- cells[3] %>% rvest::html_text(trim = TRUE)
-    ldc_sids_marker <- cells[4] %>% rvest::html_text(trim = TRUE)
-    nap_lang <- cells[5] %>% rvest::html_text(trim = TRUE)
-    date_posted <- cells[6] %>% rvest::html_text(trim = TRUE)
-    
-    # Extract just the first (English) PDF link from the language column
-    pdf_elements <- cells[5] %>% rvest::html_nodes("p a")
-    
-    # If there's at least one PDF link, get the first one (English)
-    if (length(pdf_elements) > 0) {
-      pdf_link <- pdf_elements[1] %>% rvest::html_attr("href")
+    # Option 2: If no English text found, check for links with span containing "English"
+    if (is.null(english_pdf_link)) {
+      spans <- language_cell %>% html_nodes("a span")
       
-      # Add to our dataframe
-      nap_data <- nap_data %>% dplyr::add_row(
-        nap_id = nap_id,
-        country_name = country_name,
-        region = region,
-        ldc_sids_marker = ldc_sids_marker,
-        nap_lang = nap_lang,
-        date_posted = date_posted,
-        pdf_link = pdf_link,
-        scrape_date = as.character(Sys.Date())
+      if (length(spans) > 0) {
+        span_texts <- spans %>% html_text(trim = TRUE)
+        
+        for (j in 1:length(spans)) {
+          if (length(span_texts) >= j && !is.na(span_texts[j]) && 
+              grepl("english", span_texts[j], ignore.case = TRUE)) {
+            # Get the parent <a> tag of this span
+            parent_link <- spans[j] %>% html_node(xpath = "..") %>% html_attr("href")
+            if (!is.na(parent_link)) {
+              english_pdf_link <- parent_link
+              break
+            }
+          }
+        }
+      }
+    }
+    
+    # If we found an English PDF link
+    if (!is.null(english_pdf_link)) {
+      # Create safe filename
+      safe_country <- tolower(gsub("[^a-zA-Z0-9]", "_", country_name))
+      pdf_path <- file.path(pdf_dir, paste0(safe_country, ".pdf"))
+      
+      # Get all language options as text
+      language_options <- language_cell %>% html_text(trim = TRUE)
+      
+      # Add to dataframe
+      nap_data <- add_row(nap_data,
+                          nap_id = nap_id,
+                          country_name = country_name,
+                          region = region,
+                          ldc_sids_marker = ldc_sids_marker,
+                          language_options = language_options,
+                          date_posted = date_posted,
+                          english_pdf_link = english_pdf_link,
+                          pdf_path = pdf_path,
+                          pdf_download_success = FALSE,
+                          pdf_text = NA_character_
       )
       
-      successful_entries <- successful_entries + 1
+      message("Found English NAP for: ", country_name)
     } else {
-      # Handle rows with no PDF links
-      nap_data <- nap_data %>% dplyr::add_row(
-        nap_id = nap_id,
-        country_name = country_name,
-        region = region,
-        ldc_sids_marker = ldc_sids_marker,
-        nap_lang = nap_lang,
-        date_posted = date_posted,
-        pdf_link = NA_character_,
-        scrape_date = as.character(Sys.Date())
-      )
-      
-      message(paste("No PDF link found for", country_name))
+      message("No English PDF found for: ", country_name)
     }
-    
-  }, error = function(e) {
-    message(paste("Error processing row", i, ":", e$message))
-  })
-  
-  # Add a small delay between processing each row to be polite
-  Sys.sleep(0.5)
-}
-
-message(paste("Successfully scraped information for", nrow(nap_data), "National Adaptation Plans"))
-
-# Check if we got any data
-if (nrow(nap_data) == 0) {
-  message("No NAPs were successfully scraped. Check if the website structure has changed.")
-  stop("No NAPs successfully scraped")
-}
-
-# Add columns to store PDF-related information
-nap_data <- nap_data %>%
-  dplyr::mutate(
-    pdf_path = NA_character_,            # Path to the downloaded file
-    pdf_download_success = FALSE,        # Whether download was successful
-    pdf_pages = NA_integer_,             # Number of pages
-    pdf_text = NA_character_             # The extracted text content
-  )
-
-# Check for changes compared to previous run (if it exists)
-previous_data_path <- file.path(cache_dir, "nap_data.rds")
-if (file.exists(previous_data_path)) {
-  previous_data <- readRDS(previous_data_path)
-  
-  # Basic comparison 
-  new_count <- nrow(nap_data)
-  old_count <- nrow(previous_data)
-  
-  message("Previous NAP count: ", old_count)
-  message("Current NAP count: ", new_count)
-  
-  if (new_count > old_count) {
-    message("Found ", new_count - old_count, " new NAPs since last run")
-  } else if (new_count < old_count) {
-    message("WARNING: Current count is less than previous count. Check for scraping issues.")
-  } else {
-    message("NAP count unchanged since last run")
   }
 }
 
-# Save the metadata to the cache
-cache_file <- file.path(cache_dir, "nap_data.rds")
-saveRDS(nap_data, cache_file)
-message("NAP metadata saved to: ", cache_file)
+message("Found ", nrow(nap_data), " English NAPs")
 
-# Complete execution with timing information
-end_time <- Sys.time()
-elapsed <- difftime(end_time, start_time, units = "mins")
-message("NAP metadata scraping completed in ", round(elapsed, 2), " minutes at ", format(end_time))
+# Download and process PDFs
+message("Processing English NAPs...")
+for (i in 1:nrow(nap_data)) {
+  message("Processing ", i, " of ", nrow(nap_data), ": ", nap_data$country_name[i])
+  
+  # Download PDF
+  if (!nap_data$pdf_download_success[i]) {
+    pdf_url <- nap_data$english_pdf_link[i]
+    if (!grepl("^http", pdf_url)) {
+      pdf_url <- paste0("https://napcentral.org", pdf_url)
+    }
+    
+    message("Downloading English PDF for ", nap_data$country_name[i])
+    Sys.sleep(3) # Be polite
+    
+    response <- try(GET(
+      pdf_url, 
+      write_disk(nap_data$pdf_path[i], overwrite = TRUE),
+      user_agent("napr (nnrorstad@gmail.com)"),
+      timeout(60)
+    ))
+    
+    if (!inherits(response, "try-error") && status_code(response) == 200 && 
+        file.exists(nap_data$pdf_path[i]) && file.size(nap_data$pdf_path[i]) > 0) {
+      nap_data$pdf_download_success[i] <- TRUE
+      message("Download successful")
+    } else {
+      message("Download failed")
+    }
+  }
+  
+  # Extract text
+  if (nap_data$pdf_download_success[i] && is.na(nap_data$pdf_text[i])) {
+    message("Extracting text from PDF...")
+    text <- try(pdf_text(nap_data$pdf_path[i]))
+    if (!inherits(text, "try-error")) {
+      nap_data$pdf_text[i] <- paste(text, collapse = "\n\n")
+      message("Text extraction successful")
+    } else {
+      message("Text extraction failed")
+    }
+  }
+  
+  # Save progress every 5 records
+  if (i %% 5 == 0 || i == nrow(nap_data)) {
+    saveRDS(nap_data, cache_file)
+    message("Progress saved")
+  }
+}
+
+# Filter to successful downloads only
+final_nap_data <- nap_data %>% filter(pdf_download_success)
+
+# Save final data
+save(final_nap_data, file = output_file, compress = "xz")
+message("Done! Successfully processed ", nrow(final_nap_data), " English NAPs")
